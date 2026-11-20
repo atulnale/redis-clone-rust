@@ -1,12 +1,13 @@
 #![allow(unused_imports)]
 
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock, time::Duration};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream, tcp::OwnedReadHalf},
     sync::RwLock,
     task,
+    time::sleep,
 };
 
 static STORE: LazyLock<RwLock<HashMap<String, String>>> =
@@ -74,6 +75,26 @@ async fn handle_set(args: &[String]) -> String {
         let mut db = STORE.write().await;
         db.insert(args[0].clone(), args[1].clone());
     }
+    if args.len() > 2 {
+        let key = args[0].clone();
+        match args[2].as_str() {
+            "PX" => {
+                let duration = get_duration(args[3].parse().unwrap(), "PX");
+                tokio::spawn(async move {
+                    set_expiry(duration).await;
+                    remove_key(key).await;
+                });
+            }
+            "EX" => {
+                let duration = get_duration(args[3].parse().unwrap(), "EX");
+                tokio::spawn(async move {
+                    set_expiry(duration).await;
+                    remove_key(key).await;
+                });
+            }
+            _ => {}
+        }
+    }
     format_simple_output("OK")
 }
 
@@ -86,7 +107,10 @@ async fn handle_get(args: &[String]) -> String {
 
     res
 }
-
+async fn remove_key(key: String) {
+    let mut db = STORE.write().await;
+    db.remove(&key);
+}
 async fn read_db(key: &str) -> Option<String> {
     let db = STORE.read().await;
     db.get(key).cloned()
@@ -104,4 +128,16 @@ fn format_bulk_output(o: &str) -> String {
 
 async fn handle_echo(args: &[String]) -> String {
     format_bulk_output(&args[0])
+}
+
+async fn set_expiry(duration: Duration) {
+    sleep(duration).await;
+}
+
+fn get_duration(value: i64, flag: &str) -> Duration {
+    match flag {
+        "PX" => Duration::from_millis(value as u64),
+        "EX" => Duration::from_secs(value as u64),
+        _ => Duration::from_hours(2),
+    }
 }
