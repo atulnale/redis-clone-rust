@@ -86,23 +86,36 @@ async fn handle_lrange(args: &[String]) -> String {
             "wrong number of arguments for 'lrange' command".to_string(),
         ));
     }
-    let start: usize = args[1].clone().parse().unwrap();
-    let end: usize = args[2].clone().parse().unwrap();
-    if end < start {
-        return format_output(ARRAY(Vec::new()));
-    }
+    let start: i32 = args[1].clone().parse().unwrap();
+    let end: i32 = args[2].clone().parse().unwrap();
     let reader = RPUSH_LIST.read().await;
     match reader.get(&args[0]) {
         Some(list) => {
-            if start >= list.len() {
+            let start = get_lrange_index(list.len(), start);
+            let end = get_lrange_index(list.len(), end);
+
+            if end < start || start >= list.len() {
                 return format_output(ARRAY(Vec::new()));
             }
-            let end = end.min(list.len()-1);
+            let end = end.min(list.len() - 1);
+            eprint!("start{} end{}", start, end);
+            dbg!(start);
+            dbg!(end);
             let temp: Vec<String> = list[start..=end].iter().cloned().collect();
             format_output(ARRAY(temp))
         }
         None => format_output(ARRAY(Vec::new())),
     }
+}
+fn get_lrange_index(len: usize, index: i32) -> usize {
+    if index < 0 && index.abs() > len as i32 {
+        return 0;
+    }
+    return if index < 0 {
+        (len as i32 + index) as usize
+    } else {
+        index as usize
+    };
 }
 
 async fn parse_command(
@@ -125,6 +138,7 @@ async fn parse_command(
         let n = buf_reader.read_line(&mut arg).await?;
         res.push((arg.trim()[..len as usize]).to_string());
     }
+
     Ok(res)
 }
 async fn handle_set(args: &[String]) -> String {
