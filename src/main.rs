@@ -10,7 +10,19 @@ use tokio::{
     time::sleep,
 };
 
+use crate::EncodingType::{BULK, ERROR, INTEGER, SIMPLE};
+
+enum EncodingType {
+    BULK,
+    SIMPLE,
+    INTEGER,
+    ERROR,
+}
+
 static STORE: LazyLock<RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+static RPUSH_LIST: LazyLock<RwLock<HashMap<String, Vec<String>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,10 +54,21 @@ async fn handle_stream(mut stream: TcpStream) -> Result<(), Box<dyn std::error::
             "ECHO" => handle_echo(&cmd_args[1..]).await,
             "SET" => handle_set(&cmd_args[1..]).await,
             "GET" => handle_get(&cmd_args[1..]).await,
+            "RPUSH" => handle_rpush(&cmd_args[1..]).await,
             _ => "".to_string(),
         };
         write_half.write_all(output.as_bytes()).await?
     }
+}
+
+async fn handle_rpush(args: &[String]) -> String {
+    if args.len() < 2 {
+        return format_output("wrong number of arguments for 'rpush' command", ERROR);
+    }
+    let mut writer = RPUSH_LIST.write().await;
+    let mut list = writer.entry(args[0].clone()).or_default();
+    list.extend(args[1..].iter().cloned());
+    format_output(&list.len().to_string(), EncodingType::INTEGER)
 }
 
 async fn parse_command(
@@ -95,14 +118,14 @@ async fn handle_set(args: &[String]) -> String {
             _ => {}
         }
     }
-    format_simple_output("OK")
+    format_output("OK", EncodingType::SIMPLE)
 }
 
 async fn handle_get(args: &[String]) -> String {
     let val = read_db(&args[0]).await;
     let res = match val {
-        Some(x) => format_bulk_output(x.as_str()),
-        None => format_bulk_output(""),
+        Some(x) => format_output(x.as_str(), EncodingType::BULK),
+        None => format_output("", EncodingType::BULK),
     };
 
     res
@@ -116,18 +139,22 @@ async fn read_db(key: &str) -> Option<String> {
     db.get(key).cloned()
 }
 
-fn format_simple_output(o: &str) -> String {
-    format!("+{}\r\n", o)
-}
-fn format_bulk_output(o: &str) -> String {
-    if o.is_empty() {
-        return format!("${}\r\n", -1);
+fn format_output(o: &str, encoding_type: EncodingType) -> String {
+    match encoding_type {
+        BULK => {
+            if o.is_empty() {
+                return format!("${}\r\n", -1);
+            }
+            return format!("${}\r\n{}\r\n", o.len(), o);
+        }
+        SIMPLE => format!("+{}\r\n", o),
+        INTEGER => format!(":{}\r\n", o),
+        ERROR => format!("-ERR {}\r\n", o),
     }
-    format!("${}\r\n{}\r\n", o.len(), o)
 }
 
 async fn handle_echo(args: &[String]) -> String {
-    format_bulk_output(&args[0])
+    format_output(&args[0], EncodingType::BULK)
 }
 
 async fn set_expiry(duration: Duration) {
