@@ -10,13 +10,14 @@ use tokio::{
     time::sleep,
 };
 
-use crate::EncodingType::{BULK, ERROR, INTEGER, SIMPLE};
+use crate::EncodingType::{ARRAY, BULK, ERROR, INTEGER, SIMPLE};
 
 enum EncodingType {
-    BULK,
-    SIMPLE,
-    INTEGER,
-    ERROR,
+    BULK(String),
+    SIMPLE(String),
+    INTEGER(i32),
+    ERROR(String),
+    ARRAY(Vec<String>),
 }
 
 static STORE: LazyLock<RwLock<HashMap<String, String>>> =
@@ -55,6 +56,7 @@ async fn handle_stream(mut stream: TcpStream) -> Result<(), Box<dyn std::error::
             "SET" => handle_set(&cmd_args[1..]).await,
             "GET" => handle_get(&cmd_args[1..]).await,
             "RPUSH" => handle_rpush(&cmd_args[1..]).await,
+            "LRANGE" => handle_lrange(&cmd_args[1..]).await,
             _ => "".to_string(),
         };
         write_half.write_all(output.as_bytes()).await?
@@ -63,12 +65,44 @@ async fn handle_stream(mut stream: TcpStream) -> Result<(), Box<dyn std::error::
 
 async fn handle_rpush(args: &[String]) -> String {
     if args.len() < 2 {
-        return format_output("wrong number of arguments for 'rpush' command", ERROR);
+        return format_output(ERROR(
+            "wrong number of arguments for 'rpush' command".to_string(),
+        ));
     }
-    let mut writer = RPUSH_LIST.write().await;
-    let mut list = writer.entry(args[0].clone()).or_default();
-    list.extend(args[1..].iter().cloned());
-    format_output(&list.len().to_string(), EncodingType::INTEGER)
+    let count;
+    {
+        let mut writer = RPUSH_LIST.write().await;
+        let mut list = writer.entry(args[0].clone()).or_default();
+        list.extend(args[1..].iter().cloned());
+        count = list.len();
+    }
+
+    format_output(EncodingType::INTEGER(count as i32))
+}
+
+async fn handle_lrange(args: &[String]) -> String {
+    if args.len() != 3 {
+        return format_output(ERROR(
+            "wrong number of arguments for 'lrange' command".to_string(),
+        ));
+    }
+    let start: usize = args[1].clone().parse().unwrap();
+    let end: usize = args[2].clone().parse().unwrap();
+    if end < start {
+        return format_output(ARRAY(Vec::new()));
+    }
+    let reader = RPUSH_LIST.read().await;
+    match reader.get(&args[0]) {
+        Some(list) => {
+            if start >= list.len() {
+                return format_output(ARRAY(Vec::new()));
+            }
+            let end = end.min(list.len()-1);
+            let temp: Vec<String> = list[start..=end].iter().cloned().collect();
+            format_output(ARRAY(temp))
+        }
+        None => format_output(ARRAY(Vec::new())),
+    }
 }
 
 async fn parse_command(
@@ -118,14 +152,14 @@ async fn handle_set(args: &[String]) -> String {
             _ => {}
         }
     }
-    format_output("OK", EncodingType::SIMPLE)
+    format_output(EncodingType::SIMPLE("OK".to_string()))
 }
 
 async fn handle_get(args: &[String]) -> String {
     let val = read_db(&args[0]).await;
     let res = match val {
-        Some(x) => format_output(x.as_str(), EncodingType::BULK),
-        None => format_output("", EncodingType::BULK),
+        Some(x) => format_output(EncodingType::BULK(x)),
+        None => format_output(EncodingType::BULK("".to_string())),
     };
 
     res
@@ -139,22 +173,29 @@ async fn read_db(key: &str) -> Option<String> {
     db.get(key).cloned()
 }
 
-fn format_output(o: &str, encoding_type: EncodingType) -> String {
+fn format_output(encoding_type: EncodingType) -> String {
     match encoding_type {
-        BULK => {
-            if o.is_empty() {
+        BULK(s) => {
+            if s.is_empty() {
                 return format!("${}\r\n", -1);
             }
-            return format!("${}\r\n{}\r\n", o.len(), o);
+            return format!("${}\r\n{}\r\n", s.len(), s);
         }
-        SIMPLE => format!("+{}\r\n", o),
-        INTEGER => format!(":{}\r\n", o),
-        ERROR => format!("-ERR {}\r\n", o),
+        SIMPLE(s) => format!("+{}\r\n", s),
+        INTEGER(i) => format!(":{}\r\n", i),
+        ERROR(s) => format!("-ERR {}\r\n", s),
+        ARRAY(arr) => {
+            let mut res = format!("*{}\r\n", arr.len());
+            for ele in arr {
+                res.push_str(format!("${}\r\n{}\r\n", ele.len(), ele).as_str());
+            }
+            res
+        }
     }
 }
 
 async fn handle_echo(args: &[String]) -> String {
-    format_output(&args[0], EncodingType::BULK)
+    format_output(EncodingType::BULK(args[0].clone()))
 }
 
 async fn set_expiry(duration: Duration) {
