@@ -98,9 +98,6 @@ async fn handle_lrange(args: &[String]) -> String {
                 return format_output(ARRAY(Vec::new()));
             }
             let end = end.min(list.len() - 1);
-            eprint!("start{} end{}", start, end);
-            dbg!(start);
-            dbg!(end);
             let temp: Vec<String> = list[start..=end].iter().cloned().collect();
             format_output(ARRAY(temp))
         }
